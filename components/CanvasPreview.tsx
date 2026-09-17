@@ -29,6 +29,10 @@ export function CanvasPreview() {
 
   const currentIndex = queue.findIndex((q) => q.id === previewItemId);
   const previewItem = currentIndex !== -1 ? queue[currentIndex] : undefined;
+  const currentAudioFile =
+    previewItem && audioFiles.length > 0 && currentIndex !== -1
+      ? audioFiles[currentIndex % audioFiles.length]
+      : null;
 
   // Handle mute toggle
   useEffect(() => {
@@ -37,6 +41,61 @@ export function CanvasPreview() {
     }
   }, [isMuted]);
 
+  // Dedicated effect for audio playback, isolated from canvas updates
+  useEffect(() => {
+    if (!currentAudioFile) {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current = null;
+      }
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(currentAudioFile);
+    const audio = new Audio(objectUrl);
+    audio.loop = true;
+    audio.muted = isMuted;
+    audioRef.current = audio;
+
+    let isCancelled = false;
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((e) => {
+        // Ignore AbortError caused by navigation or unmounting
+        if (e.name === "AbortError" || isCancelled) {
+          return;
+        }
+        console.warn("Audio playback prevented by browser policy:", e);
+      });
+    }
+
+    return () => {
+      isCancelled = true;
+      if (audioRef.current === audio) {
+        audioRef.current = null;
+      }
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            audio.pause();
+            audio.src = "";
+            URL.revokeObjectURL(objectUrl);
+          })
+          .catch(() => {
+            audio.pause();
+            audio.src = "";
+            URL.revokeObjectURL(objectUrl);
+          });
+      } else {
+        audio.pause();
+        audio.src = "";
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [currentAudioFile]);
+
+  // Dedicated effect for canvas rendering loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -57,9 +116,8 @@ export function CanvasPreview() {
 
     let artistName: string | undefined = undefined;
     let songName: string | undefined = undefined;
-    let objectUrl: string | null = null;
 
-    if (audioFiles.length > 0) {
+    if (audioFiles.length > 0 && currentIndex !== -1) {
       const file = audioFiles[currentIndex % audioFiles.length];
       const baseName = file.name.replace(/\.[^/.]+$/, "");
       if (baseName.includes(" - ")) {
@@ -69,13 +127,6 @@ export function CanvasPreview() {
       } else {
         songName = baseName;
       }
-
-      objectUrl = URL.createObjectURL(file);
-      const audio = new Audio(objectUrl);
-      audio.loop = true;
-      audio.muted = isMuted;
-      audioRef.current = audio;
-      audio.play().catch((e) => console.warn("Audio playback prevented by browser policy:", e));
     }
 
     try {
@@ -97,21 +148,18 @@ export function CanvasPreview() {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
       }
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.src = "";
-        audioRef.current = null;
-      }
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
     };
-  }, [previewItemId, queue, audioFiles, currentIndex, isMuted]);
+  }, [previewItem, currentIndex, audioFiles.length]);
 
   const handleRestart = () => {
     startTimeRef.current = performance.now();
     if (audioRef.current) {
       audioRef.current.currentTime = 0;
+      audioRef.current.play().catch((e) => {
+        if (e.name !== "AbortError") {
+          console.warn("Audio playback prevented by browser policy:", e);
+        }
+      });
     }
   };
 
